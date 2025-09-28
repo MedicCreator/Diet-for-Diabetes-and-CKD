@@ -3,7 +3,7 @@ import pandas as pd
 import requests
 from datetime import datetime
 
-# Load USDA API key from secrets
+# Load your USDA API key from secrets
 API_KEY = st.secrets["USDA_API_KEY"]
 
 # Nutrients to extract
@@ -18,25 +18,25 @@ NUTRIENT_IDS = {
     1051: "Water (g)"
 }
 
-# CKD nutrient limits
+# CKD nutrient reference (optional)
 CKD_LIMITS = {
     "Stage 3": {"Sodium (mg)": 2000, "Potassium (mg)": 3000, "Phosphorus (mg)": 1000},
     "Stage 4": {"Sodium (mg)": 1500, "Potassium (mg)": 2500, "Phosphorus (mg)": 800},
     "Stage 5": {"Sodium (mg)": 1500, "Potassium (mg)": 2000, "Phosphorus (mg)": 700}
 }
 
-# Initialize meal log
+# Session log
 if "meal_log" not in st.session_state:
     st.session_state.meal_log = []
 
-# USDA Search API
+# API call: search food
 def search_foods(query, max_results=1):
     url = "https://api.nal.usda.gov/fdc/v1/foods/search"
     params = {"api_key": API_KEY, "query": query, "pageSize": max_results}
     response = requests.get(url, params=params)
     return response.json().get("foods", []) if response.status_code == 200 else []
 
-# Extract nutrient data
+# API call: get nutrient info
 def extract_nutrients(fdc_id):
     url = f"https://api.nal.usda.gov/fdc/v1/food/{fdc_id}"
     params = {"api_key": API_KEY}
@@ -56,7 +56,7 @@ def extract_nutrients(fdc_id):
             result[NUTRIENT_IDS[nutrient["id"]]] = n.get("amount")
     return result
 
-# Get food info by name
+# Process query list
 def get_food_info(query):
     matches = search_foods(query)
     if not matches:
@@ -70,31 +70,27 @@ def get_food_info(query):
             results.append(row)
     return results
 
-# Summarize nutrient totals
+# Total nutrients
 def summarize_nutrients(df):
     totals = {}
-    for nutrient in ["Sodium (mg)", "Potassium (mg)", "Phosphorus (mg)", "Carbohydrates (g)"]:
-        if nutrient in df.columns:
-            totals[nutrient] = df[nutrient].sum(skipna=True)
+    for col in NUTRIENT_IDS.values():
+        if col in df.columns:
+            totals[col] = df[col].sum(skipna=True)
         else:
-            totals[nutrient] = 0
+            totals[col] = 0
     return totals
 
 # ---------------- UI ----------------
 
 st.set_page_config(page_title="CKD + Diabetes Food Tracker", layout="wide")
-st.title("🍽️ CKD + Diabetes Nutrient Tracker")
-st.caption("Get Potassium and Phosphorus content per food item and total per meal.")
+st.title("🥗 CKD + Diabetes Food Nutrient Analyzer")
+st.caption("Get total nutrients: Calories, Carbs, Protein, Fat, Sodium, Potassium, Phosphorus, and Water.")
 
-# Stage & Diabetes
-col1, col2 = st.columns(2)
-with col1:
-    stage = st.selectbox("Select CKD Stage", ["Stage 3", "Stage 4", "Stage 5"])
-with col2:
-    diabetic = st.checkbox("Diabetic?", value=True)
+# CKD stage (for context)
+stage = st.selectbox("Select CKD Stage (for reference only)", ["Stage 3", "Stage 4", "Stage 5"], index=0)
 
 # Input
-food_input = st.text_input("Enter food items (comma-separated)", "banana, milk, rice")
+food_input = st.text_input("Enter food items (comma-separated)", "banana, rice, boiled egg")
 
 if st.button("Analyze"):
     items = [f.strip() for f in food_input.split(",") if f.strip()]
@@ -114,40 +110,33 @@ if st.button("Analyze"):
         })
 
         totals = summarize_nutrients(df)
-        limits = CKD_LIMITS[stage]
 
-        st.subheader("📊 Nutrient Load (Current Meal)")
-        for nutrient in ["Sodium (mg)", "Potassium (mg)", "Phosphorus (mg)"]:
-            total = totals[nutrient]
-            max_val = limits[nutrient]
-            percent = (total / max_val) * 100 if max_val else 0
-            st.markdown(f"🔹 **{nutrient}: {total:.0f} mg / {max_val} mg** ({percent:.0f}%)")
-
-        if diabetic:
-            st.markdown(f"🍞 **Carbohydrates:** {totals['Carbohydrates (g)']:.0f} g (recommended per meal: 45–60 g)")
+        st.subheader("📊 Total Nutrients for This Meal")
+        for label in NUTRIENT_IDS.values():
+            st.markdown(f"🔸 **{label}: {totals[label]:.2f}**")
 
         st.divider()
-        st.subheader("📋 Nutrient Details Per Food")
+        st.subheader("📋 Per Food Nutrient Breakdown")
         st.dataframe(df)
 
-        st.download_button("📥 Download CSV", df.to_csv(index=False), file_name="meal_nutrients.csv")
+        st.download_button("📥 Download Meal CSV", df.to_csv(index=False), file_name="meal_nutrients.csv")
 
-# Sidebar Meal Log
+# Sidebar: Daily Log
 if st.session_state.meal_log:
-    st.sidebar.subheader("📅 Session Meal Log")
+    st.sidebar.subheader("🧾 Today's Meal Log")
     for meal in st.session_state.meal_log[-10:][::-1]:
         st.sidebar.markdown(f"🕒 {meal['timestamp'].strftime('%H:%M')} – {meal['foods']}")
 
     full_df = pd.concat([m["data"] for m in st.session_state.meal_log], ignore_index=True)
-    full_summary = summarize_nutrients(full_df)
+    full_totals = summarize_nutrients(full_df)
 
-    st.sidebar.subheader("🧮 Daily Totals")
-    for nutrient in ["Sodium (mg)", "Potassium (mg)", "Phosphorus (mg)"]:
-        st.sidebar.markdown(f"🔹 **{nutrient}:** {full_summary[nutrient]:.0f} mg")
+    st.sidebar.subheader("📈 Daily Nutrient Totals")
+    for label in NUTRIENT_IDS.values():
+        st.sidebar.markdown(f"✅ **{label}: {full_totals[label]:.2f}**")
 
     if st.sidebar.button("📥 Download Full Day Log"):
         st.sidebar.download_button("Download CSV", full_df.to_csv(index=False), "full_day_log.csv")
 
     if st.sidebar.button("🗑️ Clear Log"):
         st.session_state.meal_log = []
-        st.sidebar.success("Log cleared.")
+        st.sidebar.success("Meal log cleared.")
