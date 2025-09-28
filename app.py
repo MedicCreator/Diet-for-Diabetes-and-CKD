@@ -4,10 +4,10 @@ import requests
 from PIL import Image
 from datetime import datetime
 
-# Load USDA API key from Streamlit secrets
+# 🔐 Load your USDA API Key from Streamlit Secrets
 API_KEY = st.secrets["USDA_API_KEY"]
 
-# Nutrient IDs to extract from USDA API
+# Nutrient IDs to extract from USDA
 NUTRIENT_IDS = {
     1008: "Calories",
     1003: "Protein (g)",
@@ -19,25 +19,25 @@ NUTRIENT_IDS = {
     1051: "Water (g)"
 }
 
-# CKD nutrient limits by stage
+# CKD Stage limits (used for display only)
 CKD_LIMITS = {
     "Stage 3": {"Sodium (mg)": 2000, "Potassium (mg)": 3000, "Phosphorus (mg)": 1000},
     "Stage 4": {"Sodium (mg)": 1500, "Potassium (mg)": 2500, "Phosphorus (mg)": 800},
     "Stage 5": {"Sodium (mg)": 1500, "Potassium (mg)": 2000, "Phosphorus (mg)": 700}
 }
 
-# Initialize meal log in session
+# 📋 Track meals across app session
 if "meal_log" not in st.session_state:
     st.session_state.meal_log = []
 
-# --- Function to search USDA for food items ---
+# 🔍 Search USDA for a food name
 def search_foods(query, max_results=1):
     url = "https://api.nal.usda.gov/fdc/v1/foods/search"
     params = {"api_key": API_KEY, "query": query, "pageSize": max_results}
     res = requests.get(url, params=params)
     return res.json().get("foods", []) if res.status_code == 200 else []
 
-# --- Function to extract nutrients from USDA by FDC ID ---
+# 📦 Extract nutrients for a specific food item
 def extract_nutrients(fdc_id):
     url = f"https://api.nal.usda.gov/fdc/v1/food/{fdc_id}"
     params = {"api_key": API_KEY}
@@ -55,86 +55,84 @@ def extract_nutrients(fdc_id):
             result[NUTRIENT_IDS[nid]] = n.get("amount")
     return result
 
-# --- Function to get nutrient info and label safety ---
-def get_food_info(query, stage):
+# 🔄 Process multiple food items
+def get_food_info(query):
     matches = search_foods(query)
     if not matches:
         return [{"Food": query, "Error": "❌ Not found"}]
-
     results = []
-    limits = CKD_LIMITS[stage]
     for match in matches:
         data = extract_nutrients(match["fdcId"])
         if data:
             entry = {"Food": match["description"]}
             entry.update(data)
-            for nutrient in ["Potassium (mg)", "Phosphorus (mg)"]:
-                val = entry.get(nutrient)
-                if val is not None:
-                    if val < 0.6 * limits[nutrient]:
-                        entry[f"{nutrient} Safety"] = "🟢 Safe"
-                    elif val <= limits[nutrient]:
-                        entry[f"{nutrient} Safety"] = "🟡 Caution"
-                    else:
-                        entry[f"{nutrient} Safety"] = "🔴 High"
             results.append(entry)
     return results
 
-# --- Summarize nutrients safely ---
+# ➕ Aggregate nutrient totals
 def summarize_nutrients(df):
     summary = {}
     for col in ["Calories", "Protein (g)", "Total Fat (g)", "Carbohydrates (g)", "Sodium (mg)", "Potassium (mg)", "Phosphorus (mg)"]:
-        if col in df.columns:
-            vals = df[col].dropna()
-            summary[col] = vals.sum() if not vals.empty else 0
-        else:
-            summary[col] = 0
+        summary[col] = df[col].sum(skipna=True) if col in df.columns else 0
     return summary
 
-# ====================== Streamlit App Layout ======================
+# ==================== STREAMLIT UI ====================
 
-st.set_page_config(page_title="CKD & Diabetes Diet Friend", layout="centered")
+st.set_page_config(page_title="CKD + Diabetes Food Tracker", layout="centered")
+st.title("🥦 CKD + Diabetes Diet Analyzer")
+st.caption("Enter food items to view their nutrient content using USDA database")
 
-st.title("🥦 Diet Friend for Diabetes & CKD")
-st.caption("Personalized food analyzer for kidney-conscious eating.")
+# Select stage
+stage = st.selectbox("CKD Stage", list(CKD_LIMITS.keys()))
+ckd_limits = CKD_LIMITS[stage]
 
-# CKD Stage selection
-stage = st.selectbox("Select CKD Stage", list(CKD_LIMITS.keys()))
-
-# Food input
+# Input food
 food_input = st.text_input("Enter food items (comma-separated)", "banana, milk")
 
-if st.button("Analyze Food") and food_input:
+# Button to trigger analysis
+if st.button("Analyze"):
     items = [f.strip() for f in food_input.split(",") if f.strip()]
+    all_data = []
     for item in items:
-        st.session_state.meal_log.extend(get_food_info(item, stage))
+        all_data.extend(get_food_info(item))
 
-# Meal log display
+    df = pd.DataFrame(all_data)
+    if df.empty:
+        st.error("❌ No nutrient data found.")
+    else:
+        # Log meal
+        st.session_state.meal_log.append({
+            "timestamp": datetime.now(),
+            "foods": food_input,
+            "data": df
+        })
+
+        # Totals
+        totals = summarize_nutrients(df)
+
+        st.subheader("📊 Nutrient Load for This Meal")
+        for nutrient in ["Sodium (mg)", "Potassium (mg)", "Phosphorus (mg)"]:
+            total = totals[nutrient]
+            limit = ckd_limits[nutrient]
+            percent = (total / limit) * 100 if limit else 0
+            st.markdown(f"**{nutrient}:** {total:.0f} mg / {limit} mg ({percent:.0f}%)")
+
+        st.subheader("📋 Nutrient Details Per Food")
+        st.dataframe(df.fillna(""), use_container_width=True)
+
+        st.download_button("📥 Download This Meal as CSV", df.to_csv(index=False), file_name="ckd_meal.csv")
+
+# Meal log summary
 if st.session_state.meal_log:
-    st.subheader("🧾 Meal Log")
-    df = pd.DataFrame(st.session_state.meal_log)
-    st.dataframe(df.fillna(""), use_container_width=True)
+    st.sidebar.subheader("📅 Meal Log")
+    full_df = pd.concat([m["data"] for m in st.session_state.meal_log], ignore_index=True)
+    st.sidebar.markdown(f"🧾 {len(st.session_state.meal_log)} meals logged.")
+    full_summary = summarize_nutrients(full_df)
 
-    # Nutrient totals
-    st.subheader("📊 Total Nutrient Summary")
-    totals = summarize_nutrients(df)
-    for nutrient in ["Calories", "Protein (g)", "Total Fat (g)", "Carbohydrates (g)", "Sodium (mg)", "Potassium (mg)", "Phosphorus (mg)"]:
-        st.markdown(f"**{nutrient}:** {totals[nutrient]:.1f}")
-
-    # Nutrient Load and Safety
-    limits = CKD_LIMITS[stage]
-    st.subheader("🔎 Nutrient Load (Current Meal)")
     for nutrient in ["Sodium (mg)", "Potassium (mg)", "Phosphorus (mg)"]:
-        total = totals[nutrient]
-        max_val = limits[nutrient]
-        percent = (total / max_val) * 100 if max_val else 0
-        color = "🟢" if percent < 60 else "🟡" if percent < 100 else "🔴"
-        st.markdown(f"{color} **{nutrient}: {total:.0f} mg / {max_val} mg** ({percent:.0f}%)")
+        st.sidebar.markdown(f"🔹 {nutrient}: {full_summary[nutrient]:.0f} mg")
 
-    # Clear log
-    if st.button("🗑️ Clear Meal Log"):
+    if st.sidebar.button("🗑️ Clear Log"):
         st.session_state.meal_log = []
+        st.sidebar.success("Meal log cleared.")
 
-# Footer
-st.markdown("---")
-st.caption("Built with ❤️ using Streamlit & USDA API")
