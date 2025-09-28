@@ -80,6 +80,17 @@ def get_food_info(query, stage):
             results.append(entry)
     return results
 
+# --- Summarize nutrients safely ---
+def summarize_nutrients(df):
+    summary = {}
+    for col in ["Calories", "Protein (g)", "Total Fat (g)", "Carbohydrates (g)", "Sodium (mg)", "Potassium (mg)", "Phosphorus (mg)"]:
+        if col in df.columns:
+            vals = df[col].dropna()
+            summary[col] = vals.sum() if not vals.empty else 0
+        else:
+            summary[col] = 0
+    return summary
+
 # ====================== Streamlit App Layout ======================
 
 st.set_page_config(page_title="CKD & Diabetes Diet Friend", layout="centered")
@@ -91,10 +102,12 @@ st.caption("Personalized food analyzer for kidney-conscious eating.")
 stage = st.selectbox("Select CKD Stage", list(CKD_LIMITS.keys()))
 
 # Food input
-food_input = st.text_input("Enter a food to analyze:")
+food_input = st.text_input("Enter food items (comma-separated)", "banana, milk")
+
 if st.button("Analyze Food") and food_input:
-    entries = get_food_info(food_input, stage)
-    st.session_state.meal_log.extend(entries)
+    items = [f.strip() for f in food_input.split(",") if f.strip()]
+    for item in items:
+        st.session_state.meal_log.extend(get_food_info(item, stage))
 
 # Meal log display
 if st.session_state.meal_log:
@@ -104,10 +117,8 @@ if st.session_state.meal_log:
 
     # Nutrient totals
     st.subheader("📊 Total Nutrient Summary")
-    totals = {}
+    totals = summarize_nutrients(df)
     for nutrient in ["Calories", "Protein (g)", "Total Fat (g)", "Carbohydrates (g)", "Sodium (mg)", "Potassium (mg)", "Phosphorus (mg)"]:
-        vals = df[nutrient].dropna()
-        totals[nutrient] = vals.sum() if not vals.empty else 0
         st.markdown(f"**{nutrient}:** {totals[nutrient]:.1f}")
 
     # Nutrient Load and Safety
@@ -127,4 +138,3 @@ if st.session_state.meal_log:
 # Footer
 st.markdown("---")
 st.caption("Built with ❤️ using Streamlit & USDA API")
-
