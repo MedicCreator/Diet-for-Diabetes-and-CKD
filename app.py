@@ -1,10 +1,11 @@
 import streamlit as st
 import pandas as pd
 import requests
-from datetime import datetime
 
+# Define API key
 API_KEY = st.secrets["USDA_API_KEY"]
 
+# Nutrient mapping
 NUTRIENT_IDS = {
     1008: "Calories",
     1003: "Protein (g)",
@@ -13,115 +14,114 @@ NUTRIENT_IDS = {
     1093: "Sodium (mg)",
     1092: "Potassium (mg)",
     1091: "Phosphorus (mg)",
-    1051: "Water (g)"
+    1051: "Water (g)",
+    2000: "Sugars (g)"  # added sugar if available
 }
 
+# CKD thresholds
+CKD_LIMITS = {
+    "Stage 3": {"Sodium (mg)": 2000, "Potassium (mg)": 3000, "Phosphorus (mg)": 1000},
+    "Stage 4": {"Sodium (mg)": 1500, "Potassium (mg)": 2500, "Phosphorus (mg)": 800},
+    "Stage 5": {"Sodium (mg)": 1500, "Potassium (mg)": 2000, "Phosphorus (mg)": 700}
+}
+
+# Session state for meal tracking
 if "meal_log" not in st.session_state:
     st.session_state.meal_log = []
 
-# Search food via USDA API
+# Search USDA
 def search_foods(query, max_results=1):
     url = "https://api.nal.usda.gov/fdc/v1/foods/search"
     params = {"api_key": API_KEY, "query": query, "pageSize": max_results}
-    response = requests.get(url, params=params)
-    return response.json().get("foods", []) if response.status_code == 200 else []
+    res = requests.get(url, params=params)
+    return res.json().get("foods", []) if res.status_code == 200 else []
 
-# Extract nutrients per 100g (standardized)
+# Get nutrients
 def extract_nutrients(fdc_id):
     url = f"https://api.nal.usda.gov/fdc/v1/food/{fdc_id}"
     params = {"api_key": API_KEY}
-    response = requests.get(url, params=params)
-    if response.status_code != 200:
+    res = requests.get(url, params=params)
+    if res.status_code != 200:
         return {}
-
-    data = response.json()
+    data = res.json()
     nutrients = data.get("foodNutrients", [])
-    result = {"Basis": "Per 100 grams"}
+    result = {}
     for n in nutrients:
-        nutrient = n.get("nutrient", {})
-        if nutrient.get("id") in NUTRIENT_IDS:
-            result[NUTRIENT_IDS[nutrient["id"]]] = n.get("amount")
+        nid = n.get("nutrient", {}).get("id")
+        if nid in NUTRIENT_IDS:
+            result[NUTRIENT_IDS[nid]] = n.get("amount")
     return result
 
-# Process list of foods
-def get_food_info(query):
-    matches = search_foods(query)
-    if not matches:
-        return [{"Food": query, "Error": "❌ Not found"}]
-    results = []
-    for match in matches:
-        data = extract_nutrients(match["fdcId"])
-        if data:
-            row = {"Food": match["description"]}
-            row.update(data)
-            results.append(row)
-    return results
+# Analyze safety
+def assess_safety(nutrients, ckd_stage):
+    diabetes_safe = "✅" if nutrients.get("Carbohydrates (g)", 0) < 30 and nutrients.get("Sugars (g)", 0) < 10 else "❌"
+    ckd_safe = {}
+    if ckd_stage in CKD_LIMITS:
+        for key, max_val in CKD_LIMITS[ckd_stage].items():
+            val = nutrients.get(key, 0)
+            ckd_safe[key] = "✅" if val <= max_val else "❌"
+    return diabetes_safe, ckd_safe
 
-# Sum up nutrients
-def summarize_nutrients(df):
-    totals = {}
-    for col in NUTRIENT_IDS.values():
-        if col in df.columns:
-            totals[col] = df[col].sum(skipna=True)
-        else:
-            totals[col] = 0
-    return totals
+# Display results
+def display_results(food_name, nutrients, ckd_stage):
+    st.subheader(food_name)
+    df = pd.DataFrame(nutrients.items(), columns=["Nutrient", "Amount (per 100g)"])
+    st.dataframe(df)
 
-# ---------------- UI ----------------
+    diabetes_safe, ckd_safety = assess_safety(nutrients, ckd_stage)
 
-st.set_page_config(page_title="CKD + Diabetes Food Tracker", layout="wide")
-st.title("🥗 CKD + Diabetes Nutrient Analyzer")
-st.caption("Nutrient values displayed per 100 grams of each food item.")
+    st.markdown(f"**Diabetes Safe:** {diabetes_safe}")
+    st.markdown(f"**CKD Stage {ckd_stage} Safety:**")
+    for k, v in ckd_safety.items():
+        st.markdown(f"- {k}: {v}")
 
-# Input
-food_input = st.text_input("Enter food items (comma-separated)", "banana, rice, boiled egg")
+    # Log meal
+    st.session_state.meal_log.append({
+        "Food": food_name,
+        **nutrients,
+        "Diabetes Safe": diabetes_safe,
+        "CKD Safety": ckd_safety
+    })
+
+# Meal summary
+def summarize_meal():
+    if not st.session_state.meal_log:
+        st.info("No foods added yet.")
+        return
+
+    st.subheader("🍽️ Meal Summary")
+    df = pd.DataFrame(st.session_state.meal_log)
+    df_summary = df.drop(columns=["Food", "Diabetes Safe", "CKD Safety"]).sum(numeric_only=True)
+    st.dataframe(df_summary.to_frame(name="Total Nutrients"))
+
+    # Safety summary
+    total_carbs = df_summary.get("Carbohydrates (g)", 0)
+    total_sugar = df_summary.get("Sugars (g)", 0)
+    st.markdown(f"**Total Carbohydrates:** {total_carbs}g")
+    st.markdown(f"**Total Sugars:** {total_sugar}g")
+    st.markdown(f"**Meal is {'✅ Safe' if total_carbs < 60 and total_sugar < 20 else '❌ Not Safe'} for Diabetes**")
+
+# Streamlit UI
+st.title("🥗 Diet Advisor for Diabetes & CKD")
+st.markdown("Check nutrient content and dietary safety of your meals.")
+
+query = st.text_input("Enter food name")
+ckd_stage = st.selectbox("Select CKD Stage", options=["Stage 3", "Stage 4", "Stage 5"])
 
 if st.button("Analyze"):
-    items = [f.strip() for f in food_input.split(",") if f.strip()]
-    all_data = []
-    for item in items:
-        all_data.extend(get_food_info(item))
-
-    df = pd.DataFrame(all_data)
-
-    if df.empty:
-        st.error("❌ No nutrient data found.")
+    matches = search_foods(query)
+    if matches:
+        nutrients = extract_nutrients(matches[0]["fdcId"])
+        if nutrients:
+            display_results(matches[0]["description"], nutrients, ckd_stage)
+        else:
+            st.error("Failed to extract nutrient info.")
     else:
-        st.session_state.meal_log.append({
-            "timestamp": datetime.now(),
-            "foods": food_input,
-            "data": df
-        })
+        st.warning("No match found.")
 
-        totals = summarize_nutrients(df)
+if st.button("Show Meal Summary"):
+    summarize_meal()
 
-        st.subheader("📊 Total Nutrients (All Inputs Combined - 100g Each)")
-        for label in NUTRIENT_IDS.values():
-            st.markdown(f"🔸 **{label}: {totals[label]:.2f}**")
-
-        st.divider()
-        st.subheader("📋 Nutrients Per 100g of Each Food")
-        st.dataframe(df)
-
-        st.download_button("📥 Download CSV", df.to_csv(index=False), file_name="food_nutrients_100g.csv")
-
-# Sidebar: Meal log
-if st.session_state.meal_log:
-    st.sidebar.subheader("🧾 Today's Meal Log")
-    for meal in st.session_state.meal_log[-10:][::-1]:
-        st.sidebar.markdown(f"🕒 {meal['timestamp'].strftime('%H:%M')} – {meal['foods']}")
-
-    full_df = pd.concat([m["data"] for m in st.session_state.meal_log], ignore_index=True)
-    full_totals = summarize_nutrients(full_df)
-
-    st.sidebar.subheader("📈 Combined Nutrients So Far (Per 100g Each)")
-    for label in NUTRIENT_IDS.values():
-        st.sidebar.markdown(f"✅ **{label}: {full_totals[label]:.2f}**")
-
-    if st.sidebar.button("📥 Download Full Log"):
-        st.sidebar.download_button("Download CSV", full_df.to_csv(index=False), "full_day_log.csv")
-
-    if st.sidebar.button("🗑️ Clear Log"):
-        st.session_state.meal_log = []
-        st.sidebar.success("Meal log cleared.")
-
+if st.button("Clear Meal Log"):
+    st.session_state.meal_log = []
+    st.success("Meal log cleared.")
