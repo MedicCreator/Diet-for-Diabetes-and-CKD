@@ -15,7 +15,7 @@ NUTRIENT_IDS = {
     1092: "Potassium (mg)",
     1091: "Phosphorus (mg)",
     1051: "Water (g)",
-    2000: "Sugars (g)"  # added sugar if available
+    2000: "Sugars (g)"  # optional, may not always be available
 }
 
 # CKD thresholds
@@ -25,9 +25,9 @@ CKD_LIMITS = {
     "Stage 5": {"Sodium (mg)": 1500, "Potassium (mg)": 2000, "Phosphorus (mg)": 700}
 }
 
-# Session state for meal tracking
-if "meal_log" not in st.session_state:
-    st.session_state.meal_log = []
+# Session state for cumulative summary
+if "summary_df" not in st.session_state:
+    st.session_state.summary_df = pd.DataFrame()
 
 # Search USDA
 def search_foods(query, max_results=1):
@@ -75,53 +75,58 @@ def display_results(food_name, nutrients, ckd_stage):
     for k, v in ckd_safety.items():
         st.markdown(f"- {k}: {v}")
 
-    # Log meal
-    st.session_state.meal_log.append({
-        "Food": food_name,
-        **nutrients,
-        "Diabetes Safe": diabetes_safe,
-        "CKD Safety": ckd_safety
-    })
+    # Append to summary
+    summary_row = {**nutrients}
+    summary_row["Food"] = food_name
+    st.session_state.summary_df = pd.concat([st.session_state.summary_df, pd.DataFrame([summary_row])], ignore_index=True)
 
 # Meal summary
 def summarize_meal():
-    if not st.session_state.meal_log:
+    df = st.session_state.summary_df
+    if df.empty:
         st.info("No foods added yet.")
         return
 
-    st.subheader("🍽️ Meal Summary")
-    df = pd.DataFrame(st.session_state.meal_log)
-    df_summary = df.drop(columns=["Food", "Diabetes Safe", "CKD Safety"]).sum(numeric_only=True)
-    st.dataframe(df_summary.to_frame(name="Total Nutrients"))
+    st.subheader("🍽️ Meal Nutrient Summary")
+    summary_cols = [col for col in df.columns if col != "Food"]
+    df_sum = df[summary_cols].sum(numeric_only=True)
+    st.dataframe(df_sum.to_frame(name="Total per Meal"))
 
-    # Safety summary
-    total_carbs = df_summary.get("Carbohydrates (g)", 0)
-    total_sugar = df_summary.get("Sugars (g)", 0)
+    # Safety indicators
+    total_carbs = df_sum.get("Carbohydrates (g)", 0)
+    total_sugar = df_sum.get("Sugars (g)", 0)
     st.markdown(f"**Total Carbohydrates:** {total_carbs}g")
     st.markdown(f"**Total Sugars:** {total_sugar}g")
-    st.markdown(f"**Meal is {'✅ Safe' if total_carbs < 60 and total_sugar < 20 else '❌ Not Safe'} for Diabetes**")
+    if total_carbs < 60 and total_sugar < 20:
+        st.success("✅ This meal is likely safe for diabetic patients.")
+    else:
+        st.warning("⚠️ This meal may not be safe for diabetic patients.")
 
 # Streamlit UI
 st.title("🥗 Diet Advisor for Diabetes & CKD")
-st.markdown("Check nutrient content and dietary safety of your meals.")
+st.markdown("Analyze food nutrient content and assess safety for CKD and diabetic diets.")
 
-query = st.text_input("Enter food name")
+query = st.text_input("Enter food name", "")
 ckd_stage = st.selectbox("Select CKD Stage", options=["Stage 3", "Stage 4", "Stage 5"])
 
-if st.button("Analyze"):
-    matches = search_foods(query)
-    if matches:
-        nutrients = extract_nutrients(matches[0]["fdcId"])
-        if nutrients:
-            display_results(matches[0]["description"], nutrients, ckd_stage)
-        else:
-            st.error("Failed to extract nutrient info.")
+if st.button("Analyze Food"):
+    if query.strip() == "":
+        st.warning("Please enter a food name.")
     else:
-        st.warning("No match found.")
+        matches = search_foods(query)
+        if matches:
+            nutrients = extract_nutrients(matches[0]["fdcId"])
+            if nutrients:
+                display_results(matches[0]["description"], nutrients, ckd_stage)
+            else:
+                st.error("Could not extract nutrient info.")
+        else:
+            st.warning("No match found.")
 
 if st.button("Show Meal Summary"):
     summarize_meal()
 
-if st.button("Clear Meal Log"):
-    st.session_state.meal_log = []
-    st.success("Meal log cleared.")
+if st.button("Clear Meal"):
+    st.session_state.summary_df = pd.DataFrame()
+    st.success("Meal cleared.")
+
