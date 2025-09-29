@@ -129,4 +129,3 @@ if st.button("Show Meal Summary"):
 if st.button("Clear Meal"):
     st.session_state.summary_df = pd.DataFrame()
     st.success("Meal cleared.")
-
